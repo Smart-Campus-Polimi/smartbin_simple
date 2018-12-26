@@ -6,6 +6,7 @@
 #include <math.h>
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <HX711_ADC.h>
 #include "Adafruit_VL53L0X.h"
 
 #include "config.h"
@@ -17,9 +18,9 @@ uint32_t mac_int;
 char jsonChar[230];
 long height[PRECISION_SAMPLES];
 
-
 /***************** FIELDS ****************/
 long real_height;
+long real_weight;
 int sequenceNumber = 0;
 
 typedef struct t  {
@@ -37,7 +38,7 @@ PubSubClient client(net);
 StaticJsonBuffer<300> jsonBuffer;
 JsonObject& root = jsonBuffer.createObject();
 Adafruit_VL53L0X tof = Adafruit_VL53L0X();
-
+HX711_ADC LoadCell(D5, D4);
 
 void setup() {
   Serial.begin(115200);
@@ -51,6 +52,9 @@ void setup() {
   mac_int = storeMacAddress();
 
   check_sensors();
+   Serial.println("Start tare");
+  //Tare everything at startup
+  tare();
 }
 
 /********** START LOOP ************/
@@ -92,7 +96,7 @@ void send_data(){
       while(1);  
     }
   }
-    
+  real_weight = getWeightAIO();
   createJson();
   //convert in json
   root.printTo(jsonChar, sizeof(jsonChar)); 
@@ -126,6 +130,33 @@ int storeMacAddress(){
   Serial.println(mac);
 
   return mac;
+}
+
+
+long getWeightAIO() {
+  LoadCell.powerUp();
+  LoadCell.begin();
+  long t = millis();
+  int count = 0;
+
+  while (1 == 1) {
+    LoadCell.update();
+    //get smoothed value from data set + current calibration factor
+    if (millis() > t + STABILISING_TIME) {
+      long i = (long) round(LoadCell.getData());
+      count = count + 1;
+      //Serial.print("W: ");
+      //Serial.println(i);
+      t = millis();
+
+      if (count > 0) {
+        count = 0;
+        //Serial.println("Return");
+        LoadCell.powerDown();
+        return i;
+      }
+    }
+  }
 }
 
 bool readValues(){
@@ -178,7 +209,7 @@ void createJson(){
   root["SN"] = sequenceNumber;
   root["height"] = real_height;
   root["username"] = mac_int;
-  
+  root["weight"] = real_weight;
   sequenceNumber++;
   root.prettyPrintTo(Serial);
 }
@@ -263,6 +294,23 @@ void print_time(unsigned long time_millis){
     Serial.print("Time: ");
     Serial.print(time_millis/1000);
     Serial.println("s");
+}
+
+/*
+   Do a tare only if this is the first boot
+*/
+void tare() {
+  //Initialize load cell
+  LoadCell.powerUp();
+  LoadCell.begin();
+  
+  Serial.println("Storing bin weight");
+  LoadCell.start(STABILISING_TIME);
+  long offset = LoadCell.getTareOffset();
+  
+  //Finish set-up loadcell calibration
+  LoadCell.setCalFactor(SCALE_FACTOR);
+  LoadCell.powerDown();
 }
 
 void check_sensors(){
